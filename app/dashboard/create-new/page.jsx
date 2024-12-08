@@ -1,5 +1,5 @@
 'use client'
-import React, { useState } from 'react'
+import React, { useContext, useEffect, useState } from 'react'
 import SelectTopic from './_components/SelectTopic'
 import SelectStyle from './_components/SelectStyle';
 import SelectDuration from './_components/SelectDuration';
@@ -7,14 +7,11 @@ import { Button } from '@/components/ui/button';
 import axios from 'axios';
 import CustomLoading from './_components/CustomLoading';
 import { v4 as uuidv4 } from 'uuid'
-
-const scriptData = 'hili hali hali'
-const videoScriptData = [
-  {
-    "imagePrompt": "A man in a business suit, struggling to eat a banana, banana slipping away, comical expression, wide shot, cinematic lighting, hyperrealistic",
-    "contentText": "Scene 1: A man tries to eat a banana but fails miserably."
-  }
-]
+import { VideoDataContext } from '@/app/_context/videoDataContext';
+import { db } from '@/configs/db';
+import { useUser } from '@clerk/nextjs';
+import { VideoData } from '@/configs/schema';
+import PlayerDialog from '../_components/PlayerDialog';
 
 function CreateNew() {
 
@@ -24,6 +21,10 @@ function CreateNew() {
   const [audioFileUrl, setAudioFileUrl] = useState();
   const [captions, setCaptions] = useState();
   const [imageList, setImageList] = useState();
+  const [playVideo, setPlayVideo] = useState(false);
+  const [videoId, setVideoId] = useState();
+  const { videoData, setVideoData } = useContext(VideoDataContext);
+  const { user } = useUser();
 
   const onHandleInputChange = (fieldName, fieldValue) => {
     setFormData(prev => ({
@@ -33,24 +34,31 @@ function CreateNew() {
   }
 
   const onCreateClickHandler = () => {
-    //getVideoScript();
-    //generateAudioFile(scriptData);
-    //generateAudioCaption('https://firebasestorage.googleapis.com/v0/b/shortly-6c877.firebasestorage.app/o/shortly%2F6b3bb9aa-4a42-45d2-9e8b-e60b482382e4.mp3?alt=media&token=aeecd909-f971-4982-aa9f-2a76e5f584fa');
-    generateImage();
+    getVideoScript();
   }
 
+  /**
+   * Get Video Script
+   */
   const getVideoScript = async () => {
     setLoading(true);
-    const prompt = 'Write a script to generate ' + formData.duration + ' seconds video on topic: ' + formData.topic + ' along with AI image prompt in ' + formData.imageStyle + ' format for each scene and give me result in JSON format with imagePrompt and contentText as field'
-    const result = await axios.post('/api/get-video-script', {
+    const prompt = 'Write a script to generate ' + formData.duration + ' seconds video on topic: ' + formData.topic + ' along with AI image prompt in ' + formData.imageStyle + ' format for each scene, please do not write NSFW content and give me result in JSON format with imagePrompt and contentText as field'
+    await axios.post('/api/get-video-script', {
       prompt: prompt
-    }).then(response => {
+    }).then(async (response) => {
+      setVideoData(prev => ({
+        ...prev,
+        'videoScript': response.data.result
+      }))
       setVideoScript(response.data.result);
-      generateAudioFile(response.data.result);
+      await generateAudioFile(response.data.result);
     })
-    setLoading(false);
   }
 
+  /**
+   * Generate Audio File and Save to Firebase Storage
+   * @param {*} videoScriptData 
+   */
   const generateAudioFile = async (videoScriptData) => {
     setLoading(true)
     let script = '';
@@ -60,43 +68,82 @@ function CreateNew() {
     });
 
     await axios.post('/api/generate-audio', {
-      text: videoScriptData,
+      text: script,
       id: id
-    }).then(response => {
+    }).then(async (response) => {
+      setVideoData(prev => ({
+        ...prev,
+        'audioFileUrl': response.data.result
+      }))
       setAudioFileUrl(response.data.result);
+      response.data.result && await generateAudioCaption(response.data.result, videoScriptData);
     })
-
-    setLoading(false)
   }
 
-  const generateAudioCaption = async (fileUrl) => {
-    setLoading(true)
+  /**
+   * Generate caption from audio file
+   * @param {*} fileUrl 
+   */
+  const generateAudioCaption = async (fileUrl, videoScriptData) => {
 
     await axios.post('/api/generate-caption', {
       audioFileUrl: fileUrl
-    }).then(response => {
-      console.log(response.data.result);
+    }).then(async (response) => {
       setCaptions(response?.data?.result);
-      generateImage();
+      setVideoData(prev => ({
+        ...prev,
+        'captions': response.data.result
+      }))
+      console.log(response.data.result);
+      response.data.result && await generateImage(videoScriptData);
     })
 
-    setLoading(false)
   }
 
-  const generateImage = async () => {
-    setLoading(true);
+  /**
+   * Generate AI Images
+   */
+  const generateImage = async (videoScriptData) => {
     let images = [];
-    const imagePromises = videoScriptData.map(async (element) => { 
-      const response = await axios.post('/api/generate-image', {
-        prompt: element?.imagePrompt
-      });
-      console.log(response);
-      images.push(response);
-    });
-
-    await Promise.all(imagePromises);
-    console.log(images);
+    for (const element of videoScriptData) {
+      try {
+        const response = await axios.post('/api/generate-image', {
+          prompt: element.imagePrompt
+        });
+        console.log(response.data.result);
+        images.push(response.data.result);
+      } catch (error) {
+        console.log('Error:' + error);
+      }
+    }
+    setVideoData(prev => ({
+      ...prev,
+      'imageList': images
+    }))
     setImageList(images);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    console.log(videoData);
+    if (Object.keys(videoData).length === 4) {
+      saveVideoData(videoData);
+    }
+  }, [videoData])
+
+  const saveVideoData = async (videoData) => {
+    setLoading(true);
+    const result = await db.insert(VideoData).values({
+      script: videoData?.videoScript,
+      audioFileUrl: videoData?.audioFileUrl,
+      captions: videoData?.captions,
+      imageList: videoData?.imageList,
+      createdBy: user?.primaryEmailAddress?.emailAddress
+    }).returning({ id: VideoData?.id })
+
+    setVideoId(result[0].id);
+
+    console.log(result);
     setLoading(false);
   }
 
@@ -110,6 +157,7 @@ function CreateNew() {
         <Button className='mt-10 w-full' onClick={onCreateClickHandler} >Create Short Video</Button>
       </div>
       <CustomLoading loading={loading} />
+      <PlayerDialog playVideo={playVideo} videoId={videoId} />
     </div>
   )
 }

@@ -15,7 +15,7 @@ export async function POST(req) {
 
   const request = {
     input: { text: text },
-    voice: { languageCode: 'en-US', ssmlGender: 'FEMALE' },
+    voice: { languageCode: 'en-US', ssmlGender: 'MALE' },
     audioConfig: { audioEncoding: 'MP3' },
   };
 
@@ -25,9 +25,6 @@ export async function POST(req) {
 
   await uploadBytes(storageRef, audioBuffer, { contentType: 'audio/mp3' });
   const downloadUrl = await getDownloadURL(storageRef);
-  console.log(downloadUrl);
 
-  console.log('Audio content written to file: output.mp3');
-
-  return NextResponse.json({ result: 'success' });
+  return NextResponse.json({ result: downloadUrl });
 }
